@@ -8,13 +8,20 @@
  */
 import { execFileSync, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
+import { releaseTarArgs, tarFlavor, tarFlavorFromHelp } from "./archive-tar.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+/* ⚠️ 整行都要对上，不能只查「有一行、里面有 GPL」。
+   0.1.2 时 package.json 已是 0.1.2，`--version` 仍印 0.1.1，旧判据照样全绿。
+   许可口径停在这一句里的 `GPL-3.0`，不要改成别的写法。 */
+const expectedVersionLine = `umbra-dwg2json ${pkg.version} (libredwg-web 0.8.3, GPL-3.0)`;
 const run = promisify(execFile);
 let pass = 0; const bad = [];
 const ok = (c, what, detail = "") => { if (c) { pass++; console.log(`  ✓ ${what}${detail ? `  ${detail}` : ""}`); } else { bad.push(what); console.log(`  ✗ ${what}${detail ? `  ${detail}` : ""}`); } };
@@ -32,6 +39,9 @@ async function contract(label, exe) {
   /* ⚠️ 版本串里**要有 GPL 字样** —— 它是用户唯一看得见「这是另一个程序、另一个许可」
      的地方（Studio 的「组件信息」里直接显示它）。 */
   ok(/GPL/i.test(v.out), "版本串里说得出它的许可", v.out.trim());
+  ok(v.out.trim() === expectedVersionLine,
+     "`--version` 与 package.json 的 version 一致",
+     `期望 ${expectedVersionLine}，实际 ${JSON.stringify(v.out.trim())}`);
 
   const n = await call(exe, []);
   ok(n.code !== 0 && /用法|usage/i.test(n.err), "参数不全 → 非 0 退出码 + stderr 给用法",
@@ -47,7 +57,6 @@ async function contract(label, exe) {
   ok(!existsSync(join(box, "o.json")), "读不了的时候**一个输出文件都没留下**（半份 JSON 比没有糟）");
 
   const junk = join(box, "假的.dwg");
-  const { writeFileSync } = await import("node:fs");
   writeFileSync(junk, Buffer.from("这不是 dwg，只是一串字"), "utf8");
   const j = await call(exe, ["--in", junk, "--out", join(box, "j.json")]);
   ok(j.code !== 0 && j.err.trim().length > 0, "**喂一份不是 dwg 的文件 → 非 0 + 说得出话**（不是崩在栈里）",
@@ -79,6 +88,15 @@ if (!tar) {
   const sha = createHash("sha256").update(readFileSync(join(dist, tar))).digest("hex");
   const said = readFileSync(join(dist, `${tar}.sha256`), "utf8").trim().split(/\s+/)[0];
   ok(sha === said, "**`.sha256` 文件里写的就是这个包的哈希**（Studio 要按它校验）", `${sha.slice(0, 16)}…`);
+  ok(tar === `dwg2json-${pkg.version}.tar.gz`, "包名仍是 `dwg2json-<版本>.tar.gz`", tar);
+  ok(readFileSync(join(box, "VERSION"), "utf8") === `umbra-cad-converter ${pkg.version}\n`,
+     "VERSION 仍是一行 `umbra-cad-converter <版本>`");
+  const packed = ustarMembers(gunzipSync(readFileSync(join(dist, tar))));
+  const fixedMtime = Date.parse("2026-01-01T00:00:00Z") / 1000;
+  ok(packed.length > 0 && packed.every((m) => m.uid === 0 && m.gid === 0 && m.magic.startsWith("ustar") && m.mtime === fixedMtime),
+     "发布 tar.gz 仍是 ustar，uid/gid 为 0，mtime 仍是定死的 2026-01-01T00:00:00Z",
+     packed.slice(0, 2).map((m) => `${m.uid}/${m.gid} mtime=${m.mtime} ${m.name}`).join(" · "));
+  ok(packed.every((m) => m.typeflag !== "x" && m.typeflag !== "g"), "没有 pax 扩展头（发布格式不变）");
   /* ⚠️ 产物也要过**同一套契约** —— 这一节的全部意义在这里。 */
   await contract("  产物的契约（和源码同一套判据）", join(box, "dwg2json.mjs"));
   console.log(`\n  产物 ${statSync(join(dist, tar)).size} 字节 · 解包 ${files.length} 个文件`);
@@ -183,5 +201,81 @@ console.log("\n③ 实体映射（自拟数据，不用 dwg）");
      "**实体映射只有一处**（`dwg2json.mjs` 里没有第二个 switch，块和顶层共用 `ent()`）");
 }
 
+/* ── ④ 打包参数 ──
+   ⚠️ Ubuntu CI 的 GNU tar 不认 bsdtar 的 `--uid`（`tar: unrecognized option '--uid'`）。
+   这里用**当前平台的 tar** 真打一个包，并要求头里 uid/gid 仍是 0、格式仍是 ustar。
+   macOS 那组参数在 Linux 上跑不了，所以只钉参数表本身：必须仍是原来的 `--uid/--gid/--no-mac-metadata`。 */
+console.log("\n④ 打包参数（GNU tar 与 macOS bsdtar 各一组，不混用）");
+{
+  const bsd = releaseTarArgs({ stage: "S", archive: "A", filelist: "F", flavor: "bsd" });
+  ok(bsd.join(" ") === "--format ustar --uid 0 --gid 0 --numeric-owner --no-mac-metadata --no-xattrs -C S -cf A -T F",
+     "macOS bsdtar 的参数与原来那一组相同", bsd.join(" "));
+  const gnu = releaseTarArgs({ stage: "S", archive: "A", filelist: "F", flavor: "gnu" });
+  ok(!gnu.includes("--uid") && !gnu.includes("--no-mac-metadata")
+     && gnu.includes("--owner=0") && gnu.includes("--group=0")
+     && gnu.includes("--numeric-owner") && gnu.includes("--no-xattrs") && gnu.includes("ustar"),
+     "GNU tar 用 --owner=0 --group=0，不用 --uid / --no-mac-metadata", gnu.join(" "));
+  ok(tarFlavorFromHelp("      --owner=NAME           force NAME as owner\n      --no-xattrs\n") === "gnu",
+     "只有 --owner、没有 --uid 的 help 认成 GNU tar");
+  ok(tarFlavorFromHelp("      --uid id\n      --gid id\n      --no-mac-metadata\n") === "bsd",
+     "有 --uid 和 --no-mac-metadata 的 help 认成 macOS bsdtar");
+  ok(tarFlavorFromHelp("usage: tar") === "unknown", "help 里两边的参数都没有 → unknown");
+  let unknown = "";
+  try { releaseTarArgs({ stage: "S", archive: "A", filelist: "F", flavor: "unknown" }); }
+  catch (error) { unknown = String(error.message ?? error); }
+  ok(unknown.includes("不认识的 tar"), "不认识的 tar 直接失败，不猜参数");
+  let help = "";
+  try { help = execFileSync("tar", ["--help"], { encoding: "utf8" }); }
+  catch (error) { help = `${error.stdout ?? ""}\n${error.stderr ?? ""}`; }
+  const flavor = tarFlavor();
+  ok(flavor === tarFlavorFromHelp(help) && (flavor === "gnu" || flavor === "bsd"),
+     "当前 tar 能识别，且和 `tar --help` 一致", flavor);
+
+  const stage = mkdtempSync(join(tmpdir(), "ucc-tar-stage-"));
+  const scratch = mkdtempSync(join(tmpdir(), "ucc-tar-out-"));
+  writeFileSync(join(stage, "hello.txt"), "hi\n");
+  const filelist = join(scratch, "filelist.txt");
+  const archive = join(scratch, "pkg.tar");
+  writeFileSync(filelist, "hello.txt\n");
+  let packedOk = true;
+  let packErr = "";
+  try {
+    execFileSync("tar", releaseTarArgs({ stage, archive, filelist }), {
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    packedOk = false;
+    packErr = `${error.stderr ?? error.message ?? error}`.trim();
+  }
+  const members = packedOk ? ustarMembers(readFileSync(archive)) : [];
+  ok(packedOk && members.length === 1 && members[0].uid === 0 && members[0].gid === 0 && members[0].magic.startsWith("ustar"),
+     "用发布脚本的 tar 参数打一个包：成功，且 ustar 头里 uid/gid 为 0",
+     packedOk ? JSON.stringify(members[0]) : packErr.slice(0, 180));
+}
+
 console.log(`\n${bad.length === 0 ? "✓" : "✗"} 契约自测 ${pass}/${pass + bad.length}`);
 if (bad.length) { bad.forEach((b) => console.log(`  ✗ ${b}`)); process.exit(1); }
+
+function ustarMembers(buf) {
+  const members = [];
+  let off = 0;
+  while (off + 512 <= buf.length) {
+    const header = buf.subarray(off, off + 512);
+    if (header.every((b) => b === 0)) break;
+    const field = (start, len) => header.subarray(start, start + len).toString("utf8").replace(/\0.*$/, "").trim();
+    const name = field(0, 100);
+    const prefix = field(345, 155);
+    const size = parseInt(field(124, 12) || "0", 8);
+    members.push({
+      name: prefix ? `${prefix}/${name}` : name,
+      uid: parseInt(field(108, 8) || "0", 8),
+      gid: parseInt(field(116, 8) || "0", 8),
+      mtime: parseInt(field(136, 12) || "0", 8),
+      magic: header.subarray(257, 263).toString("utf8").replace(/\0.*$/, ""),
+      typeflag: String.fromCharCode(header[156]),
+    });
+    off += 512 * (1 + (Number.isFinite(size) && size > 0 ? Math.ceil(size / 512) : 0));
+  }
+  return members;
+}

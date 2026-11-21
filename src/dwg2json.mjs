@@ -11,6 +11,8 @@
  */
 import { LibreDwg, Dwg_Error } from "@mlightcad/libredwg-web";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 /* ⚠️ 实体映射搬进 `ent.mjs` 了（0.1.1）：那一段是这个转换器里**唯一有分支的地方**，
    而它的毛病只在真图上露脸（`POLYLINE2D`、`ATTRIB` 的嵌套 text、整个缺掉的 `ELLIPSE`）。
    搬出去之后契约自测能用**自拟数据**喂它，一份 dwg 都不用。
@@ -18,7 +20,33 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { ent, num, xy } from "./ent.mjs";
 
 const a = process.argv.slice(2);
-if (a.includes("--version")) { console.log("umbra-dwg2json 0.1.1 (libredwg-web 0.8.3, GPL-3.0)"); process.exit(0); }
+/* ⚠️ 版本不要写死。0.1.2 的 package.json 已经是 0.1.2，这里曾经印着 0.1.1，
+   而自测只要求「有一行、里面有 GPL」，分叉了也全绿。
+   开发时读上一级 package.json（名字对得上才算这份仓库）；
+   装配产物旁边没有那份 package.json，就读 build 用同一个 version 写下的 VERSION。
+   括号里的许可字样保持 `GPL-3.0`，不在这里改口径。 */
+if (a.includes("--version")) {
+  console.log(`umbra-dwg2json ${converterVersion()} (libredwg-web 0.8.3, GPL-3.0)`);
+  process.exit(0);
+}
+
+function converterVersion() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgPath = join(here, "..", "package.json");
+  if (existsSync(pkgPath)) {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    if (pkg?.name === "umbra-cad-converter" && typeof pkg.version === "string" && pkg.version !== "") {
+      return pkg.version;
+    }
+  }
+  const versionFile = join(here, "VERSION");
+  if (existsSync(versionFile)) {
+    const match = /^umbra-cad-converter\s+(\S+)\s*$/.exec(readFileSync(versionFile, "utf8").trim());
+    if (match) return match[1];
+  }
+  console.error("找不到转换器版本");
+  process.exit(1);
+}
 const inAt = a.indexOf("--in"), outAt = a.indexOf("--out");
 if (inAt < 0 || outAt < 0) { console.error("用法：--in <x.dwg> --out <y.json>"); process.exit(2); }
 

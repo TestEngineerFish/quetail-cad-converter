@@ -10,6 +10,7 @@
  *  「别忘了删掉测试用的图」是一件需要人记得的事，而需要人记得的事会被忘掉。
  */
 import { execFileSync } from "node:child_process";
+import { releaseTarArgs } from "./archive-tar.mjs";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync, utimesSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -73,29 +74,29 @@ if (leaks.length) { console.error("✗ 产物里带了本机绝对路径：" + l
 
 /* ⑤ 打包。⚠️ 尽量可复现：排序 + 固定 uid/gid/mtime + gzip 不写时间戳。
       **可复现不是整洁** —— Studio 把 sha256 写死在代码里，
-      而「同一份源码构建两次得到两个哈希」会让「改没改过」永远说不清。 */
+      而「同一份源码构建两次得到两个哈希」会让「改没改过」永远说不清。
+   ⚠️ **时间戳用 `utimesSync` 定，不用 `tar --mtime`** —— macOS 自带的是 bsdtar 3.5，
+      它**没有** `--mtime`（实测「Option --mtime is not supported」）。
+      uid/gid 的选项也不是两边通用的：GNU tar 不认 `--uid` / `--no-mac-metadata`。
+      参数在 `archive-tar.mjs`，macOS 那一组原样留着。 */
 const tarName = `dwg2json-${version}.tar.gz`;
 const tarPath = join(ROOT, "dist", tarName);
 const files = all.map((p) => relative(STAGE, p)).sort();
-writeFileSync(join(ROOT, "dist", "filelist.txt"), files.join("\n") + "\n");
-/* ⚠️ **时间戳用 `utimesSync` 定，不用 `tar --mtime`** —— macOS 自带的是 bsdtar 3.5，
-   它**没有** `--mtime`（实测「Option --mtime is not supported」）。
-   > 一个只在 GNU tar 上存在的选项，在只发 mac 产物的仓库里就是一个必然踩到的坑。
-   改在文件上定时间，顺带还是平台无关的。 */
+const filelist = join(ROOT, "dist", "filelist.txt");
+const pkgTar = join(ROOT, "dist", "pkg.tar");
+writeFileSync(filelist, files.join("\n") + "\n");
 const FIXED = new Date("2026-01-01T00:00:00Z");
 const touchAll = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) {
   const q = join(d, e.name); if (e.isDirectory()) touchAll(q); utimesSync(q, FIXED, FIXED);
 } };
 touchAll(STAGE); utimesSync(STAGE, FIXED, FIXED);
-execFileSync("tar", [
-  "--format", "ustar", "--uid", "0", "--gid", "0", "--numeric-owner",
-  "--no-mac-metadata", "--no-xattrs",
-  "-C", STAGE, "-cf", join(ROOT, "dist", "pkg.tar"), "-T", join(ROOT, "dist", "filelist.txt"),
-], { stdio: "inherit", env: { ...process.env, COPYFILE_DISABLE: "1" } });
+execFileSync("tar", releaseTarArgs({ stage: STAGE, archive: pkgTar, filelist }), {
+  stdio: "inherit", env: { ...process.env, COPYFILE_DISABLE: "1" },
+});
 // gzip -n：不把文件名和时间戳写进 gz 头
-execFileSync("sh", ["-c", `gzip -9 -n -c "${join(ROOT, "dist", "pkg.tar")}" > "${tarPath}"`], { stdio: "inherit" });
-rmSync(join(ROOT, "dist", "pkg.tar"));
-rmSync(join(ROOT, "dist", "filelist.txt"));
+execFileSync("sh", ["-c", `gzip -9 -n -c "${pkgTar}" > "${tarPath}"`], { stdio: "inherit" });
+rmSync(pkgTar);
+rmSync(filelist);
 rmSync(STAGE, { recursive: true, force: true });
 
 const sha = createHash("sha256").update(readFileSync(tarPath)).digest("hex");
