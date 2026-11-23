@@ -72,7 +72,7 @@ const dist = join(ROOT, "dist");
 const tar = existsSync(dist) ? readdirSync(dist).find((f) => /^dwg2json-.*\.tar\.gz$/.test(f)) : undefined;
 if (!tar) {
   console.log("  — 没有 dist/*.tar.gz，这一节整块跳过（先 `npm run build`）");
-  console.log("  ⚠️ **跳过不算通过** —— 发版前必须跑过这一节，不然改写 import 错了没人知道");
+  ok(false, "② **跳过不算通过** —— 发版前必须跑过这一节，不然改写 import 错了没人知道");
 } else {
   const box = mkdtempSync(join(tmpdir(), "ucc-pkg-"));
   execFileSync("tar", ["-xzf", join(dist, tar), "-C", box, "--strip-components", "1"], { stdio: "inherit" });
