@@ -62,9 +62,9 @@ dwg2json --in <abs.dwg> --out <abs.json>    → 写 JSON，退出码 0
 }
 ```
 
-图元**八种**，**紧凑形式**（一张图有上万条，字段名比数值本身还贵）。
-⚠️ 这张表 0.1.1 加了 `ELLIPSE` / `MTEXT`、0.1.2 加了 `DIMENSION` 之后**都忘了改**，
-而它上面还写着「图元六种」—— 2026-11-03 一起补齐。
+图元**九种**，**紧凑形式**（一张图有上万条，字段名比数值本身还贵）。
+⚠️ 这张表 0.1.1 加了 `ELLIPSE` / `MTEXT`、0.1.2 加了 `DIMENSION`，上面那句计数**两次都没跟上**：
+先写着「图元六种」，2026-11-03 改成「八种」仍漏了 `DIMENSION` —— 现在改为九种，与下表一致。
 > **一个带数量词的句子，是文档里最先过期的那一句。**
 
 | `t` | 字段 |
@@ -151,7 +151,9 @@ npm run selftest
 ## 发一版
 
 1. 改 `package.json` 的 `version`
-2. `npm ci && npm run selftest && npm run build`
+2. `npm ci && npm run build && npm run selftest`
+   ⚠️ **顺序不能换**：selftest 第 ② 节测的是 `dist/` 里装配出来的产物，
+   先跑 selftest 那一节没有产物可测 —— 而跳过不算通过（见 `.github/workflows/ci.yml`）。
 3. 把 `dist/dwg2json-<版本>.tar.gz` 和 `.sha256` 传成 tag `v<版本>` 的 Release 资产
 3.5 **把 `libredwg-web-0.8.3-source.tar.gz` 一起传上去** —— 这是 GPL-3.0 第 6 条的
    「对应源码」义务（`NOTICE.md` 里写着「每个 Release 都附一份」）。
